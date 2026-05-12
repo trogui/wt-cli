@@ -2,7 +2,7 @@
 # Source this file from ~/.zshrc so `wt` can cd in the current shell.
 
 wt() {
-  local wt_cli target status
+  local wt_cli target exit_code
   wt_cli="${WT_CLI_BIN:-$HOME/Docs/GitHub/trogui/wt-cli/bin/wt-cli}"
 
   if [ ! -x "$wt_cli" ]; then
@@ -18,8 +18,8 @@ wt() {
   esac
 
   target="$($wt_cli "$@")"
-  status=$?
-  [ "$status" -ne 0 ] && return "$status"
+  exit_code=$?
+  [ "$exit_code" -ne 0 ] && return "$exit_code"
 
   if [ -n "$target" ]; then
     cd "$target"
