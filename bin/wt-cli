@@ -1,0 +1,270 @@
+#!/bin/zsh
+
+set -u
+
+_wt_git() {
+  /usr/bin/env -u GIT_DIR -u GIT_WORK_TREE /usr/bin/git "$@"
+}
+
+_wt_fzf() {
+  local fzf_bin
+
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+  fzf_bin="$(command -v fzf 2>/dev/null)"
+  if [ -z "$fzf_bin" ] && command -v brew >/dev/null 2>&1; then
+    fzf_bin="$(brew --prefix fzf 2>/dev/null)/bin/fzf"
+  fi
+
+  if [ -z "$fzf_bin" ] || [ ! -x "$fzf_bin" ]; then
+    echo "wt: fzf is required. Install it with: brew install fzf" >&2
+    return 1
+  fi
+
+  printf '%s\n' "$fzf_bin"
+}
+
+_wt_require_repo() {
+  local git_error
+
+  git_error="$(_wt_git rev-parse --show-toplevel 2>&1 >/dev/null)"
+  if [ $? -ne 0 ]; then
+    echo "wt: not inside a git repository: $PWD" >&2
+    [ -n "$git_error" ] && echo "$git_error" >&2
+    return 1
+  fi
+}
+
+_wt_help() {
+  printf '%s\n' \
+    'wt - Git worktree helper' \
+    '' \
+    'Uso:' \
+    '  wt                         Lista worktrees y navega al seleccionado' \
+    '  wt <rama>                  Crea/entra al worktree de esa rama' \
+    '  wt delete                  Borra worktrees T3 con multiselección' \
+    '  wt delete --force          Borra incluso con cambios locales' \
+    '  wt --help                  Muestra esta ayuda' \
+    '' \
+    'Comportamiento de wt <rama>:' \
+    '  - Si la rama ya tiene worktree: hace cd a ese worktree' \
+    '  - Si la rama existe pero no tiene worktree: crea worktree y entra' \
+    '  - Si la rama no existe: crea rama desde HEAD actual, worktree y entra' \
+    '  - Los worktrees nuevos van a ~/.t3/worktrees/<repo>/<rama>' \
+    '' \
+    'Delete:' \
+    '  - Solo lista worktrees dentro de ~/.t3/worktrees/' \
+    '  - Nunca lista el repo principal de ~/Docs/GitHub/twave/' \
+    '  - SPACE marca/desmarca, ENTER confirma selección' \
+    '' \
+    'Aliases:' \
+    '  wt rm | del | remove       Igual que wt delete' \
+    '' \
+    'Nota:' \
+    '  - wt-cli imprime rutas; para que haga cd usa el wrapper shell/wt.zsh.'
+}
+
+_wt_select() {
+  local fzf_bin selected path
+
+  _wt_require_repo || return 1
+  fzf_bin="$(_wt_fzf)" || return 1
+
+  selected=$(
+    _wt_git worktree list --porcelain |
+      /usr/bin/awk '
+        function flush() {
+          if (path != "") {
+            if (branch == "") branch = "(detached)"
+            print branch "\t" path
+          }
+          path = ""; branch = ""
+        }
+
+        /^worktree / {
+          path = substr($0, 10)
+        }
+
+        /^branch / {
+          branch = substr($0, 8)
+          sub(/^refs\/heads\//, "", branch)
+        }
+
+        /^detached / {
+          branch = "(detached) " substr($0, 10)
+        }
+
+        /^$/ { flush() }
+        END { flush() }
+      ' |
+      "$fzf_bin" --delimiter='\t' --with-nth=1 --prompt='worktree > '
+  )
+
+  [ -z "$selected" ] && return 1
+
+  path=$(printf '%s\n' "$selected" | /usr/bin/cut -f2-)
+  printf '%s\n' "$path"
+}
+
+_wt_create_or_enter() {
+  local branch existing_worktree main_worktree repo_name base safe target i
+
+  _wt_require_repo || return 1
+
+  branch="$1"
+  if [ -z "$branch" ]; then
+    read -r "branch?Nueva rama: "
+  fi
+
+  if [ -z "$branch" ]; then
+    echo "wt: cancelled" >&2
+    return 1
+  fi
+
+  if ! _wt_git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+    echo "wt: invalid branch name: $branch" >&2
+    return 1
+  fi
+
+  existing_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk -v wanted="refs/heads/$branch" '
+    /^worktree / { path = substr($0, 10) }
+    /^branch / && substr($0, 8) == wanted { print path; exit }
+  ')"
+  if [ -n "$existing_worktree" ]; then
+    echo "wt: branch already has a worktree, entering it: $branch" >&2
+    printf '%s\n' "$existing_worktree"
+    return
+  fi
+
+  main_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk '/^worktree / { print substr($0, 10); exit }')"
+  repo_name="${main_worktree:t}"
+  base="$HOME/.t3/worktrees/$repo_name"
+
+  safe="${branch//\//-}"
+  safe="${safe// /-}"
+  target="$base/$safe"
+  i=2
+  while [ -e "$target" ]; do
+    target="$base/$safe-$i"
+    i=$((i + 1))
+  done
+
+  /bin/mkdir -p "$base" || return 1
+
+  if _wt_git show-ref --verify --quiet "refs/heads/$branch"; then
+    _wt_git worktree add "$target" "$branch" >&2 || return 1
+  else
+    _wt_git worktree add -b "$branch" "$target" >&2 || return 1
+  fi
+
+  printf '%s\n' "$target"
+}
+
+_wt_delete() {
+  local fzf_bin force current_worktree main_worktree t3_root selected count answer label path failed
+
+  _wt_require_repo || return 1
+
+  force="$1"
+  fzf_bin="$(_wt_fzf)" || return 1
+  current_worktree="$(_wt_git rev-parse --show-toplevel)"
+  main_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk '/^worktree / { print substr($0, 10); exit }')"
+  t3_root="$HOME/.t3/worktrees/"
+
+  selected=$(
+    _wt_git worktree list --porcelain |
+      /usr/bin/awk -v main="$main_worktree" -v current="$current_worktree" -v t3_root="$t3_root" '
+        function flush() {
+          if (path != "" && index(path, t3_root) == 1 && path != main && path != current) {
+            if (branch == "") branch = "(detached)"
+            print branch "\t" path
+          }
+          path = ""; branch = ""
+        }
+
+        /^worktree / {
+          path = substr($0, 10)
+        }
+
+        /^branch / {
+          branch = substr($0, 8)
+          sub(/^refs\/heads\//, "", branch)
+        }
+
+        /^detached / {
+          branch = "(detached) " substr($0, 10)
+        }
+
+        /^$/ { flush() }
+        END { flush() }
+      ' |
+      while IFS=$'\t' read -r label path; do
+        if [ -n "$(_wt_git -C "$path" status --short 2>/dev/null)" ]; then
+          label="$label  [dirty]"
+        fi
+        printf '%s\t%s\n' "$label" "$path"
+      done |
+      "$fzf_bin" \
+        --multi \
+        --bind='space:toggle' \
+        --delimiter='\t' \
+        --with-nth=1 \
+        --prompt='delete t3 worktree > ' \
+        --header='SPACE marca, ENTER confirma selección; solo se listan worktrees de ~/.t3/worktrees'
+  )
+
+  [ -z "$selected" ] && return
+
+  count=$(printf '%s\n' "$selected" | /usr/bin/wc -l | /usr/bin/tr -d ' ')
+  echo "Vas a borrar $count worktree(s):" >&2
+  printf '%s\n' "$selected" | /usr/bin/cut -f1 | /usr/bin/sed 's/^/  - /' >&2
+
+  if [ "$force" = "force" ]; then
+    echo "Modo force activado: se borrarán incluso con cambios locales." >&2
+  else
+    echo "Si alguno tiene cambios locales, Git lo rechazará. Usa: wt delete --force" >&2
+  fi
+
+  read -r "answer?Confirmar borrado? [y/N] "
+  case "$answer" in
+    y|Y|yes|YES|s|S|si|sí|SI|SÍ) ;;
+    *) echo "wt: cancelled" >&2; return 1 ;;
+  esac
+
+  failed=0
+  while IFS=$'\t' read -r label path; do
+    [ -z "$path" ] && continue
+    if [ "$force" = "force" ]; then
+      _wt_git worktree remove --force "$path" || failed=1
+    else
+      _wt_git worktree remove "$path" || failed=1
+    fi
+  done <<EOF
+$selected
+EOF
+
+  [ "$failed" -eq 0 ] && echo "wt: deleted selected worktrees" >&2
+  return "$failed"
+}
+
+case "${1:-}" in
+  -h|--help|help)
+    _wt_help
+    ;;
+  delete|del|remove|rm)
+    case "${2:-}" in
+      -f|--force|force)
+        _wt_delete force
+        ;;
+      *)
+        _wt_delete ""
+        ;;
+    esac
+    ;;
+  "")
+    _wt_select
+    ;;
+  *)
+    _wt_create_or_enter "$1"
+    ;;
+esac
