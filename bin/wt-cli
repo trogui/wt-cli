@@ -62,6 +62,89 @@ _wt_git() {
   /usr/bin/env -u GIT_DIR -u GIT_WORK_TREE /usr/bin/git "$@"
 }
 
+_wt_current_repo_root() {
+  _wt_git rev-parse --show-toplevel 2>/dev/null
+}
+
+_wt_absolute_path() {
+  local input="$1"
+  local path="$input"
+
+  case "$path" in
+    "~")
+      path="$HOME"
+      ;;
+    "~/"*)
+      path="$HOME/${path#\~/}"
+      ;;
+    /*)
+      ;;
+    *)
+      path="$PWD/$path"
+      ;;
+  esac
+
+  printf '%s\n' "${path:A}"
+}
+
+_wt_pick_directory() {
+  local start_dir="$1"
+
+  if [ "$(uname -s)" != "Darwin" ]; then
+    echo "wt: ':pick' is only available on macOS" >&2
+    return 1
+  fi
+
+  /usr/bin/osascript - "$start_dir" <<'EOF'
+on run argv
+  set startDir to item 1 of argv
+  set chosenFolder to choose folder with prompt "Select folder" default location (POSIX file startDir)
+  POSIX path of chosenFolder
+end run
+EOF
+}
+
+_wt_resolve_setup_path() {
+  local input="$1"
+  local mode="$2"
+  local current_value="$3"
+  local resolved=""
+
+  case "$input" in
+    "")
+      resolved="$current_value"
+      ;;
+    "-")
+      if [ "$mode" = "repo" ]; then
+        resolved=""
+      else
+        echo "wt: '-' is only supported for default repo" >&2
+        return 1
+      fi
+      ;;
+    ".")
+      if [ "$mode" = "repo" ]; then
+        resolved="$(_wt_current_repo_root)"
+        if [ -z "$resolved" ]; then
+          echo "wt: '.' for default repo requires running setup inside a git repository" >&2
+          return 1
+        fi
+      else
+        resolved="${PWD:A}"
+      fi
+      ;;
+    ":pick")
+      resolved="$(_wt_pick_directory "${current_value:-$PWD}")" || return 1
+      resolved="${resolved%/}"
+      ;;
+    *)
+      resolved="$(_wt_absolute_path "$input")"
+      ;;
+  esac
+
+  printf '%s\n' "$resolved"
+}
+
 _wt_fzf() {
   local fzf_bin
 
@@ -148,27 +231,31 @@ _wt_setup() {
   current_worktree_root="$WT_WORKTREE_ROOT"
 
   printf '%s\n' "wt setup"
-  printf '%s\n' "Config file: $config_file"
-  printf '%s\n' "Current default repo: ${current_default_repo:-<none>}"
-  printf '%s\n' "Current worktree root: $current_worktree_root"
+  printf '%s\n' ''
+  printf '%s\n' "Config"
+  printf '%s\n' "  File: $config_file"
+  printf '%s\n' "  Default repo: ${current_default_repo:-<none>}"
+  printf '%s\n' "  Worktree root: $current_worktree_root"
+  printf '%s\n' ''
+  printf '%s\n' "Input shortcuts"
+  printf '%s\n' "  ENTER   Keep current config value"
+  printf '%s\n' "  .       Use current repo/folder"
+  printf '%s\n' "  -       Clear default repo"
+  printf '%s\n' "  :pick   Open macOS folder picker"
+  printf '%s\n' "  ~/...   Expand home-relative path"
+  printf '%s\n' "  foo/bar Expand relative path from current directory"
   printf '%s\n' ''
 
-  read -r "default_repo?Default repo path (ENTER keeps current config value, '-' clears): "
-  if [ -z "$default_repo" ]; then
-    default_repo="$current_default_repo"
-  elif [ "$default_repo" = "-" ]; then
-    default_repo=""
-  fi
+  read -r "default_repo?Default repo path ('-' clears): "
+  default_repo="$(_wt_resolve_setup_path "$default_repo" repo "$current_default_repo")" || return 1
 
   if [ -n "$default_repo" ] && ! { [ -d "$default_repo/.git" ] || _wt_git -C "$default_repo" rev-parse --show-toplevel >/dev/null 2>&1; }; then
     echo "wt: default repo is not a git repository: $default_repo" >&2
     return 1
   fi
 
-  read -r "worktree_root?Worktree root (ENTER keeps current config value): "
-  if [ -z "$worktree_root" ]; then
-    worktree_root="$current_worktree_root"
-  fi
+  read -r "worktree_root?Worktree root: "
+  worktree_root="$(_wt_resolve_setup_path "$worktree_root" dir "$current_worktree_root")" || return 1
 
   if [ -z "$worktree_root" ]; then
     echo "wt: worktree root cannot be empty" >&2

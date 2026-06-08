@@ -34,6 +34,12 @@ wt config show
 wt config path
 ```
 
+During `wt setup` you can use:
+
+- `.` to use the current repo or current folder
+- `~` and relative paths; they are expanded and stored as absolute paths
+- `:pick` to open a macOS folder picker
+
 ## Usage
 
 ```zsh
