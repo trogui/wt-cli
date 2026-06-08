@@ -14,17 +14,30 @@ brew install fzf
 
 ## Install
 
-Clone the repo:
+Clone the repo anywhere you want:
 
 ```zsh
 git clone https://github.com/trogui/wt-cli.git
+cd wt-cli
+```
+
+Run the installer:
+
+```zsh
+./install.sh
+```
+
+This gives you a stable install path at:
+
+```text
+$HOME/.local/share/wt-cli
 ```
 
 Then source the shell wrapper from your `~/.zshrc`:
 
 ```zsh
 # ~/.zshrc
-source "/path/to/wt-cli/shell/wt.zsh"
+source "$HOME/.local/share/wt-cli/shell/wt.zsh"
 ```
 
 Then reload your shell:
@@ -115,7 +128,7 @@ Environment variables are still supported as overrides for advanced use:
 
 ```zsh
 export WT_DEFAULT_REPO="$HOME/path/to/your/main-repo"
-export WT_WORKTREE_ROOT="$HOME/.t3/worktrees"
+export WT_WORKTREE_ROOT="$HOME/.worktrees"
 ```
 
 ## Direct CLI

@@ -33,7 +33,7 @@ _wt_load_config() {
   fi
 
   WT_DEFAULT_REPO="${WT_DEFAULT_REPO:-}"
-  WT_WORKTREE_ROOT="${WT_WORKTREE_ROOT:-$HOME/.t3/worktrees}"
+  WT_WORKTREE_ROOT="${WT_WORKTREE_ROOT:-$HOME/.worktrees}"
 }
 
 _wt_write_config() {
@@ -472,7 +472,7 @@ _wt_create_or_enter() {
 }
 
 _wt_delete() {
-  local fzf_bin force current_worktree main_worktree t3_root selected count answer label path failed
+  local fzf_bin force current_worktree main_worktree worktree_root_prefix selected count answer label path failed
 
   _wt_require_repo || return 1
 
@@ -480,13 +480,13 @@ _wt_delete() {
   fzf_bin="$(_wt_fzf)" || return 1
   current_worktree="$(_wt_git rev-parse --show-toplevel)"
   main_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk '/^worktree / { print substr($0, 10); exit }')"
-  t3_root="${WT_WORKTREE_ROOT%/}/"
+  worktree_root_prefix="${WT_WORKTREE_ROOT%/}/"
 
   selected=$(
     _wt_git worktree list --porcelain |
-      /usr/bin/awk -v main="$main_worktree" -v current="$current_worktree" -v t3_root="$t3_root" '
+      /usr/bin/awk -v main="$main_worktree" -v current="$current_worktree" -v worktree_root_prefix="$worktree_root_prefix" '
         function flush() {
-          if (path != "" && index(path, t3_root) == 1 && path != main && path != current) {
+          if (path != "" && index(path, worktree_root_prefix) == 1 && path != main && path != current) {
             if (branch == "") branch = "(detached)"
             print branch "\t" path
           }
