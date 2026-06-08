@@ -2,7 +2,25 @@
 
 Small Git worktree helper.
 
+## Requirements
+
+- macOS/Linux shell with `zsh`
+- `git`
+- `fzf`
+
+```zsh
+brew install fzf
+```
+
 ## Install
+
+Clone the repo:
+
+```zsh
+git clone https://github.com/trogui/wt-cli.git
+```
+
+Then source the shell wrapper from your `~/.zshrc`:
 
 ```zsh
 # ~/.zshrc
@@ -98,16 +116,6 @@ Environment variables are still supported as overrides for advanced use:
 ```zsh
 export WT_DEFAULT_REPO="$HOME/path/to/your/main-repo"
 export WT_WORKTREE_ROOT="$HOME/.t3/worktrees"
-```
-
-## Requirements
-
-- macOS/Linux shell with `zsh`
-- `git`
-- `fzf`
-
-```zsh
-brew install fzf
 ```
 
 ## Direct CLI
