@@ -2,6 +2,62 @@
 
 set -u
 
+_wt_config_file() {
+  local config_home
+  config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+  printf '%s\n' "${WT_CONFIG_FILE:-$config_home/wt-cli/config}"
+}
+
+_wt_load_config() {
+  local config_file env_default_repo env_worktree_root has_env_default_repo has_env_worktree_root
+
+  has_env_default_repo="${+WT_DEFAULT_REPO}"
+  env_default_repo="${WT_DEFAULT_REPO-}"
+  has_env_worktree_root="${+WT_WORKTREE_ROOT}"
+  env_worktree_root="${WT_WORKTREE_ROOT-}"
+  config_file="$(_wt_config_file)"
+
+  if [ -f "$config_file" ]; then
+    . "$config_file" || {
+      echo "wt: failed to load config file: $config_file" >&2
+      return 1
+    }
+  fi
+
+  if [ "$has_env_default_repo" -eq 1 ]; then
+    WT_DEFAULT_REPO="$env_default_repo"
+  fi
+
+  if [ "$has_env_worktree_root" -eq 1 ]; then
+    WT_WORKTREE_ROOT="$env_worktree_root"
+  fi
+
+  WT_DEFAULT_REPO="${WT_DEFAULT_REPO:-}"
+  WT_WORKTREE_ROOT="${WT_WORKTREE_ROOT:-$HOME/.t3/worktrees}"
+}
+
+_wt_write_config() {
+  local config_file="$1"
+  local default_repo="$2"
+  local worktree_root="$3"
+  local config_dir tmp_file
+
+  config_dir="${config_file:h}"
+  tmp_file="$config_file.tmp.$$"
+
+  /bin/mkdir -p "$config_dir" || return 1
+
+  {
+    printf '%s\n' '# wt-cli user config'
+    printf 'WT_DEFAULT_REPO=%q\n' "$default_repo"
+    printf 'WT_WORKTREE_ROOT=%q\n' "$worktree_root"
+  } > "$tmp_file" || return 1
+
+  /bin/mv "$tmp_file" "$config_file" || return 1
+}
+
+_wt_load_config || exit 1
+
 _wt_git() {
   /usr/bin/env -u GIT_DIR -u GIT_WORK_TREE /usr/bin/git "$@"
 }
@@ -28,11 +84,24 @@ _wt_require_repo() {
   local git_error
 
   git_error="$(_wt_git rev-parse --show-toplevel 2>&1 >/dev/null)"
-  if [ $? -ne 0 ]; then
-    echo "wt: not inside a git repository: $PWD" >&2
-    [ -n "$git_error" ] && echo "$git_error" >&2
-    return 1
+  if [ $? -eq 0 ]; then
+    return 0
   fi
+
+  if [ -n "$WT_DEFAULT_REPO" ] && { [ -d "$WT_DEFAULT_REPO/.git" ] || _wt_git -C "$WT_DEFAULT_REPO" rev-parse --show-toplevel >/dev/null 2>&1; }; then
+    echo "wt: not inside a git repository, defaulting to: $WT_DEFAULT_REPO" >&2
+    builtin cd "$WT_DEFAULT_REPO" || return 1
+    return 0
+  fi
+
+  echo "wt: not inside a git repository: $PWD" >&2
+  [ -n "$git_error" ] && echo "$git_error" >&2
+  if [ -n "$WT_DEFAULT_REPO" ]; then
+    echo "wt: default repo not available: $WT_DEFAULT_REPO" >&2
+  else
+    echo "wt: set WT_DEFAULT_REPO to use wt outside a git repository" >&2
+  fi
+  return 1
 }
 
 _wt_help() {
@@ -42,26 +111,101 @@ _wt_help() {
     'Uso:' \
     '  wt                         Lista worktrees y navega al seleccionado' \
     '  wt <rama>                  Crea/entra al worktree de esa rama' \
-    '  wt delete                  Borra worktrees T3 con multiselección' \
+    '  wt --current <rama>        Crea rama nueva desde la rama actual (HEAD)' \
+    '  wt delete                  Borra worktrees con multiselección' \
+    '  wt setup                   Configura wt-cli para este usuario' \
+    '  wt config show             Muestra la configuración efectiva' \
+    '  wt config path             Muestra la ruta del archivo de config' \
     '  wt delete --force          Borra incluso con cambios locales' \
     '  wt --help                  Muestra esta ayuda' \
     '' \
     'Comportamiento de wt <rama>:' \
     '  - Si la rama ya tiene worktree: hace cd a ese worktree' \
     '  - Si la rama existe pero no tiene worktree: crea worktree y entra' \
-    '  - Si la rama no existe: crea rama desde HEAD actual, worktree y entra' \
-    '  - Los worktrees nuevos van a ~/.t3/worktrees/<repo>/<rama>' \
+    '  - Si la rama no existe: crea rama desde origin/develop (fetch), worktree y entra' \
+    '  - wt --current <rama> crea desde la rama actual en lugar de develop' \
+    '  - Los worktrees nuevos van a WT_WORKTREE_ROOT/<repo>/<rama>' \
     '' \
     'Delete:' \
-    '  - Solo lista worktrees dentro de ~/.t3/worktrees/' \
-    '  - Nunca lista el repo principal de ~/Docs/GitHub/twave/' \
+    '  - Solo lista worktrees dentro de WT_WORKTREE_ROOT/' \
+    '  - Nunca lista el repo principal fuera de WT_WORKTREE_ROOT/' \
     '  - SPACE marca/desmarca, ENTER confirma selección' \
     '' \
     'Aliases:' \
     '  wt rm | del | remove       Igual que wt delete' \
     '' \
     'Nota:' \
-    '  - wt-cli imprime rutas; para que haga cd usa el wrapper shell/wt.zsh.'
+    '  - wt-cli imprime rutas; para que haga cd usa el wrapper shell/wt.zsh.' \
+    '  - Usa `wt setup` para guardar configuración persistente por usuario.' \
+    '  - WT_DEFAULT_REPO y WT_WORKTREE_ROOT siguen funcionando como override.'
+}
+
+_wt_setup() {
+  local config_file current_default_repo current_worktree_root default_repo worktree_root
+
+  config_file="$(_wt_config_file)"
+  current_default_repo="$WT_DEFAULT_REPO"
+  current_worktree_root="$WT_WORKTREE_ROOT"
+
+  printf '%s\n' "wt setup"
+  printf '%s\n' "Config file: $config_file"
+  printf '%s\n' "Current default repo: ${current_default_repo:-<none>}"
+  printf '%s\n' "Current worktree root: $current_worktree_root"
+  printf '%s\n' ''
+
+  read -r "default_repo?Default repo path (ENTER keeps current config value, '-' clears): "
+  if [ -z "$default_repo" ]; then
+    default_repo="$current_default_repo"
+  elif [ "$default_repo" = "-" ]; then
+    default_repo=""
+  fi
+
+  if [ -n "$default_repo" ] && ! { [ -d "$default_repo/.git" ] || _wt_git -C "$default_repo" rev-parse --show-toplevel >/dev/null 2>&1; }; then
+    echo "wt: default repo is not a git repository: $default_repo" >&2
+    return 1
+  fi
+
+  read -r "worktree_root?Worktree root (ENTER keeps current config value): "
+  if [ -z "$worktree_root" ]; then
+    worktree_root="$current_worktree_root"
+  fi
+
+  if [ -z "$worktree_root" ]; then
+    echo "wt: worktree root cannot be empty" >&2
+    return 1
+  fi
+
+  _wt_write_config "$config_file" "$default_repo" "$worktree_root" || {
+    echo "wt: failed to write config file: $config_file" >&2
+    return 1
+  }
+
+  WT_DEFAULT_REPO="$default_repo"
+  WT_WORKTREE_ROOT="$worktree_root"
+
+  echo "wt: saved config to $config_file" >&2
+}
+
+_wt_config() {
+  local config_file
+
+  config_file="$(_wt_config_file)"
+
+  case "${1:-show}" in
+    show)
+      printf '%s\n' "config_file=$config_file"
+      printf '%s\n' "default_repo=${WT_DEFAULT_REPO:-<none>}"
+      printf '%s\n' "worktree_root=$WT_WORKTREE_ROOT"
+      ;;
+    path)
+      printf '%s\n' "$config_file"
+      ;;
+    *)
+      echo "wt: unknown config command: $1" >&2
+      echo "wt: use 'wt config show' or 'wt config path'" >&2
+      return 1
+      ;;
+  esac
 }
 
 _wt_select() {
@@ -106,25 +250,92 @@ _wt_select() {
   printf '%s\n' "$path"
 }
 
+_wt_resolve_base_ref() {
+  local base_branch="$1"
+  local remote_ref="refs/remotes/origin/$base_branch"
+
+  _wt_git fetch origin "$base_branch" >&2 || return 1
+
+  if _wt_git show-ref --verify --quiet "$remote_ref"; then
+    printf '%s\n' "origin/$base_branch"
+    return
+  fi
+
+  if _wt_git show-ref --verify --quiet "refs/heads/$base_branch"; then
+    printf '%s\n' "$base_branch"
+    return
+  fi
+
+  echo "wt: base branch not found: $base_branch" >&2
+  return 1
+}
+
 _wt_create_or_enter() {
-  local branch existing_worktree main_worktree repo_name base safe target i
+  local branch input_branch base_ref remote_ref remote_short existing_worktree main_worktree repo_name base safe target i use_current current_branch
 
   _wt_require_repo || return 1
 
-  branch="$1"
-  if [ -z "$branch" ]; then
-    read -r "branch?Nueva rama: "
+  use_current=0
+  input_branch=""
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -c|--current)
+        use_current=1
+        shift
+        ;;
+      *)
+        if [ -n "$input_branch" ]; then
+          echo "wt: unexpected argument: $1" >&2
+          return 1
+        fi
+        input_branch="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [ -z "$input_branch" ]; then
+    read -r "input_branch?Nueva rama: "
   fi
 
-  if [ -z "$branch" ]; then
+  if [ -z "$input_branch" ]; then
     echo "wt: cancelled" >&2
     return 1
   fi
 
+  branch="$input_branch"
+  case "$branch" in
+    refs/heads/*)
+      branch="${branch#refs/heads/}"
+      ;;
+    refs/remotes/origin/*)
+      branch="${branch#refs/remotes/origin/}"
+      ;;
+    remotes/origin/*)
+      branch="${branch#remotes/origin/}"
+      ;;
+    origin/*)
+      branch="${branch#origin/}"
+      ;;
+  esac
+
   if ! _wt_git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-    echo "wt: invalid branch name: $branch" >&2
+    echo "wt: invalid branch name: $input_branch" >&2
     return 1
   fi
+
+  remote_ref="refs/remotes/origin/$branch"
+  remote_short="origin/$branch"
+
+  case "$input_branch" in
+    refs/remotes/*|remotes/*|origin/*)
+      if ! _wt_git show-ref --verify --quiet "$remote_ref"; then
+        echo "wt: remote branch not found: $remote_short" >&2
+        return 1
+      fi
+      ;;
+  esac
 
   existing_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk -v wanted="refs/heads/$branch" '
     /^worktree / { path = substr($0, 10) }
@@ -138,7 +349,7 @@ _wt_create_or_enter() {
 
   main_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk '/^worktree / { print substr($0, 10); exit }')"
   repo_name="${main_worktree:t}"
-  base="$HOME/.t3/worktrees/$repo_name"
+  base="$WT_WORKTREE_ROOT/$repo_name"
 
   safe="${branch//\//-}"
   safe="${safe// /-}"
@@ -153,8 +364,21 @@ _wt_create_or_enter() {
 
   if _wt_git show-ref --verify --quiet "refs/heads/$branch"; then
     _wt_git worktree add "$target" "$branch" >&2 || return 1
+  elif _wt_git show-ref --verify --quiet "$remote_ref"; then
+    _wt_git worktree add -b "$branch" "$target" "$remote_ref" >&2 || return 1
+    _wt_git -C "$target" rev-parse --abbrev-ref --symbolic-full-name "@{u}" >/dev/null 2>&1 ||
+      _wt_git -C "$target" branch --set-upstream-to="$remote_short" "$branch" >&2 ||
+      return 1
   else
-    _wt_git worktree add -b "$branch" "$target" >&2 || return 1
+    if [ "$use_current" -eq 1 ]; then
+      current_branch="$(_wt_git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+      echo "wt: creating branch from current HEAD ($current_branch)" >&2
+      _wt_git worktree add -b "$branch" "$target" >&2 || return 1
+    else
+      base_ref="$(_wt_resolve_base_ref develop)" || return 1
+      echo "wt: creating branch from $base_ref" >&2
+      _wt_git worktree add -b "$branch" "$target" "$base_ref" >&2 || return 1
+    fi
   fi
 
   printf '%s\n' "$target"
@@ -169,7 +393,7 @@ _wt_delete() {
   fzf_bin="$(_wt_fzf)" || return 1
   current_worktree="$(_wt_git rev-parse --show-toplevel)"
   main_worktree="$(_wt_git worktree list --porcelain | /usr/bin/awk '/^worktree / { print substr($0, 10); exit }')"
-  t3_root="$HOME/.t3/worktrees/"
+  t3_root="${WT_WORKTREE_ROOT%/}/"
 
   selected=$(
     _wt_git worktree list --porcelain |
@@ -209,8 +433,8 @@ _wt_delete() {
         --bind='space:toggle' \
         --delimiter='\t' \
         --with-nth=1 \
-        --prompt='delete t3 worktree > ' \
-        --header='SPACE marca, ENTER confirma selección; solo se listan worktrees de ~/.t3/worktrees'
+        --prompt='delete worktree > ' \
+        --header="SPACE marca, ENTER confirma selección; solo se listan worktrees de $WT_WORKTREE_ROOT"
   )
 
   [ -z "$selected" ] && return
@@ -251,6 +475,14 @@ case "${1:-}" in
   -h|--help|help)
     _wt_help
     ;;
+  setup)
+    shift
+    _wt_setup "$@"
+    ;;
+  config)
+    shift
+    _wt_config "$@"
+    ;;
   delete|del|remove|rm)
     case "${2:-}" in
       -f|--force|force)
@@ -265,6 +497,6 @@ case "${1:-}" in
     _wt_select
     ;;
   *)
-    _wt_create_or_enter "$1"
+    _wt_create_or_enter "$@"
     ;;
 esac

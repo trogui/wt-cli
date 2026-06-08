@@ -2,8 +2,9 @@
 # Source this file from ~/.zshrc so `wt` can cd in the current shell.
 
 wt() {
-  local wt_cli target exit_code
-  wt_cli="${WT_CLI_BIN:-$HOME/Docs/GitHub/trogui/wt-cli/bin/wt-cli}"
+  local wt_cli target exit_code script_dir
+  script_dir="${functions_source[wt]:A:h}"
+  wt_cli="${WT_CLI_BIN:-$script_dir/../bin/wt-cli}"
 
   if [ ! -x "$wt_cli" ]; then
     echo "wt: executable not found: $wt_cli" >&2
@@ -11,7 +12,7 @@ wt() {
   fi
 
   case "${1:-}" in
-    -h|--help|help|delete|del|remove|rm)
+    -h|--help|help|delete|del|remove|rm|setup|config)
       "$wt_cli" "$@"
       return
       ;;
