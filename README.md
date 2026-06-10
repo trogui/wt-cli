@@ -94,7 +94,7 @@ Create or enter the worktree for a branch:
 - if the branch already has a worktree, `cd` into it
 - if the branch exists locally without a worktree, create one and `cd` into it
 - if the branch only exists as `origin/<branch>`, create a local tracking branch from it
-- if the branch does not exist, fetch `origin/develop` and create it from there
+- if the branch does not exist, fetch `origin/develop` and create it from there without tracking `origin/develop`
 
 By default, new branches are created from the latest `origin/develop`, not from the branch you are on when you run `wt`. Use `--current` (or `-c`) to create from the current branch instead.
 

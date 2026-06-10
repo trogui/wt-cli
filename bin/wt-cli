@@ -205,7 +205,7 @@ _wt_help() {
     'Comportamiento de wt <rama>:' \
     '  - Si la rama ya tiene worktree: hace cd a ese worktree' \
     '  - Si la rama existe pero no tiene worktree: crea worktree y entra' \
-    '  - Si la rama no existe: crea rama desde origin/develop (fetch), worktree y entra' \
+    '  - Si la rama no existe: crea rama desde origin/develop (fetch) sin trackear develop' \
     '  - wt --current <rama> crea desde la rama actual en lugar de develop' \
     '  - Los worktrees nuevos van a WT_WORKTREE_ROOT/<repo>/<rama>' \
     '' \
@@ -415,6 +415,10 @@ _wt_create_or_enter() {
   remote_ref="refs/remotes/origin/$branch"
   remote_short="origin/$branch"
 
+  if ! _wt_git show-ref --verify --quiet "$remote_ref"; then
+    _wt_git fetch origin "$branch" >/dev/null 2>&1 || true
+  fi
+
   case "$input_branch" in
     refs/remotes/*|remotes/*|origin/*)
       if ! _wt_git show-ref --verify --quiet "$remote_ref"; then
@@ -464,7 +468,7 @@ _wt_create_or_enter() {
     else
       base_ref="$(_wt_resolve_base_ref develop)" || return 1
       echo "wt: creating branch from $base_ref" >&2
-      _wt_git worktree add -b "$branch" "$target" "$base_ref" >&2 || return 1
+      _wt_git worktree add --no-track -b "$branch" "$target" "$base_ref" >&2 || return 1
     fi
   fi
 
